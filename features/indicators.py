@@ -12,11 +12,18 @@ These feed into the Macro Feature set for the Macro ML Model.
 
 import numpy as np
 import pandas as pd
-import pandas_ta as ta
 
 from utils.logger import get_logger
 
 logger = get_logger("indicators")
+
+# Try to import pandas_ta, fall back to pure pandas/numpy implementation
+try:
+    import pandas_ta as ta
+    logger.debug("Using pandas_ta for technical indicators")
+except ImportError:
+    logger.warning("pandas_ta not available, using pure pandas/numpy fallback")
+    from features.ta_compat import ta
 
 
 def compute_price_indicators(df: pd.DataFrame) -> pd.DataFrame:
