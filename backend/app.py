@@ -2496,7 +2496,6 @@ def api_backtest_journey(risk, trade_idx):
 @app.route("/api/live/prices")
 def api_live_prices():
     """Return the latest tick prices from collect_ticks.py cache file."""
-    LIVE_CACHE_FILE = "/tmp/td_live_prices.json"
     try:
         mtime = os.path.getmtime(LIVE_CACHE_FILE)
         age = time.time() - mtime
