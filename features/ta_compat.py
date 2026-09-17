@@ -168,6 +168,14 @@ def mfi(high: pd.Series, low: pd.Series, close: pd.Series, volume: pd.Series, le
     return mfi_val
 
 
+def vwap(high: pd.Series, low: pd.Series, close: pd.Series, volume: pd.Series) -> pd.Series:
+    """Volume Weighted Average Price"""
+    typical = (high + low + close) / 3
+    cum_tp_vol = (typical * volume).cumsum()
+    cum_vol = volume.cumsum().replace(0, np.nan)
+    return cum_tp_vol / cum_vol
+
+
 # Module-level functions that match pandas_ta API
 def _get_func(name: str):
     """Get function by name, matching pandas_ta API"""

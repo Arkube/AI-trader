@@ -31,12 +31,14 @@ TrueData Symbol Naming (confirmed):
 """
 
 import json
+import os
 import time
 import threading
 from datetime import datetime, timedelta
 from io import StringIO
 from typing import Callable, Dict, List, Optional
 
+import numpy as np
 import pandas as pd
 import requests
 
@@ -876,3 +878,429 @@ class TrueDataAdapter:
         self._token = None
         self._token_expires = None
         logger.info("TrueData fully disconnected.")
+
+
+# ════════════════════════════════════════════════════════════════════════════════
+# Indian Stock Market API Adapter (Fallback / Free Tier)
+# ═══════════════════════════════════════════════════════════════════════════════
+# Source: https://github.com/0xramm/Indian-Stock-Market-API
+# Free REST API for NSE/BSE - No API key required, no authentication
+# Rate limit: Be respectful (~1 req/sec recommended)
+# No WebSocket support - REST only
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+class IndianMarketAPIAdapter:
+    """
+    Indian Stock Market API Adapter - Free fallback for historical data.
+    
+    Features:
+      - Historical candles (1min, 5min, 15min, 1hr, 1day)
+      - Option chains with Greeks
+      - Market quotes (LTP, OHLC, volume)
+      - Index data (NIFTY, BANKNIFTY, etc.)
+      - Expiry date lists
+    
+    Limitations:
+      - No WebSocket / real-time streaming
+      - No tick-level data
+      - No bid/ask in historical data
+      - Rate limited (be respectful)
+    
+    Usage:
+        adapter = IndianMarketAPIAdapter()
+        df = adapter.fetch_historical_bars("NIFTY", start, end, "1min")
+        option_chain = adapter.fetch_option_chain("NIFTY", expiry_date)
+    """
+
+    BASE_URL = "https://api.stockmarketapi.in/api/v1"
+    
+    # Symbol mapping from our format to API format
+    SYMBOL_MAP = {
+        "NIFTY-I": "NIFTY",
+        "BANKNIFTY-I": "BANKNIFTY",
+        "FINNIFTY-I": "FINNIFTY",
+        "NIFTY 50": "NIFTY",
+        "NIFTY BANK": "BANKNIFTY",
+    }
+
+    def __init__(self):
+        """
+        Initialize adapter.
+        
+        No API key required - this is a free public API.
+        Source: https://github.com/0xramm/Indian-Stock-Market-API
+        """
+        self._session = requests.Session()
+        self._last_request_time = 0.0
+        self._rate_limit_rps = 1  # Be conservative
+
+    def _rate_limit(self):
+        """Enforce rate limit."""
+        elapsed = time.time() - self._last_request_time
+        wait = (1.0 / self._rate_limit_rps) - elapsed
+        if wait > 0:
+            time.sleep(wait)
+        self._last_request_time = time.time()
+
+    def _map_symbol(self, symbol: str) -> str:
+        """Map our symbol format to API format."""
+        return self.SYMBOL_MAP.get(symbol, symbol)
+
+    def _fmt_date(self, dt: datetime) -> str:
+        """Format datetime to YYYY-MM-DD."""
+        return dt.strftime("%Y-%m-%d")
+
+    def _fmt_datetime(self, dt: datetime) -> str:
+        """Format datetime to YYYY-MM-DD HH:MM:SS."""
+        return dt.strftime("%Y-%m-%d %H:%M:%S")
+
+    # ── Historical Candles ──────────────────────────────────────────────────
+
+    def fetch_historical_bars(
+        self,
+        symbol: str,
+        start: datetime,
+        end: datetime,
+        interval: str = "1min",
+    ) -> pd.DataFrame:
+        """
+        Fetch historical OHLCV candles.
+        
+        Args:
+            symbol: Symbol (e.g., "NIFTY-I", "NIFTY")
+            start: Start datetime
+            end: End datetime
+            interval: "1min", "5min", "15min", "1hr", "1day"
+        
+        Returns:
+            DataFrame with columns: timestamp, open, high, low, close, volume, symbol
+        """
+        self._rate_limit()
+        
+        api_symbol = self._map_symbol(symbol)
+        
+        # Map interval to API format
+        interval_map = {
+            "1min": "1minute",
+            "5min": "5minute", 
+            "15min": "15minute",
+            "1hr": "1hour",
+            "1day": "1day",
+        }
+        api_interval = interval_map.get(interval, "1minute")
+        
+        url = f"{self.BASE_URL}/historical/candles"
+        params = {
+            "symbol": api_symbol,
+            "from": self._fmt_datetime(start),
+            "to": self._fmt_datetime(end),
+            "interval": api_interval,
+        }
+        
+        try:
+            resp = self._session.get(url, params=params, timeout=30)
+            resp.raise_for_status()
+            data = resp.json()
+            
+            if not data.get("data"):
+                logger.warning(f"No data returned for {symbol} ({interval})")
+                return pd.DataFrame()
+            
+            df = pd.DataFrame(data["data"])
+            # Expected columns: timestamp, open, high, low, close, volume
+            df.columns = [c.strip().lower() for c in df.columns]
+            
+            rename_map = {
+                "time": "timestamp",
+                "datetime": "timestamp",
+            }
+            df.rename(columns=rename_map, inplace=True)
+            
+            if "timestamp" in df.columns:
+                df["timestamp"] = pd.to_datetime(df["timestamp"])
+            
+            df["symbol"] = symbol
+            
+            # Ensure required columns exist
+            for col in ["open", "high", "low", "close", "volume"]:
+                if col not in df.columns:
+                    df[col] = np.nan
+            
+            logger.info(f"IndianMarketAPI: Fetched {len(df)} {interval} bars for {symbol}")
+            return df[["timestamp", "symbol", "open", "high", "low", "close", "volume"]]
+            
+        except requests.RequestException as e:
+            logger.error(f"IndianMarketAPI error fetching bars for {symbol}: {e}")
+            return pd.DataFrame()
+        except Exception as e:
+            logger.error(f"IndianMarketAPI parse error for {symbol}: {e}")
+            return pd.DataFrame()
+
+    def fetch_historical_minute_bars(
+        self,
+        symbol: str,
+        days: int = 180,
+        end_date: Optional[datetime] = None,
+    ) -> pd.DataFrame:
+        """Fetch historical 1-minute bars (chunked for large date ranges)."""
+        end_date = end_date or datetime.now()
+        start_date = end_date - timedelta(days=days)
+        
+        logger.info(
+            f"IndianMarketAPI: Fetching 1m bars for {symbol}: "
+            f"{start_date.date()} → {end_date.date()}"
+        )
+        
+        # API may have limits on date range per request - chunk by 30 days
+        chunks: list[pd.DataFrame] = []
+        chunk_start = start_date
+        while chunk_start < end_date:
+            chunk_end = min(chunk_start + timedelta(days=30), end_date)
+            df = self.fetch_historical_bars(symbol, chunk_start, chunk_end, "1min")
+            if not df.empty:
+                chunks.append(df)
+            chunk_start = chunk_end
+        
+        if not chunks:
+            return pd.DataFrame()
+        
+        combined = pd.concat(chunks, ignore_index=True)
+        combined.drop_duplicates(subset=["timestamp"], keep="last", inplace=True)
+        combined.sort_values("timestamp", inplace=True)
+        combined.reset_index(drop=True, inplace=True)
+        
+        logger.info(f"IndianMarketAPI: Combined {len(chunks)} chunks → {len(combined)} bars for {symbol}")
+        return combined
+
+    # ── Option Chain ────────────────────────────────────────────────────────
+
+    def fetch_option_chain(
+        self,
+        symbol: str,
+        expiry: Optional[datetime] = None,
+    ) -> pd.DataFrame:
+        """
+        Fetch option chain for a symbol.
+        
+        Args:
+            symbol: Underlying symbol (e.g., "NIFTY", "BANKNIFTY")
+            expiry: Expiry date (optional, defaults to nearest)
+        
+        Returns:
+            DataFrame with option chain data including Greeks
+        """
+        self._rate_limit()
+        
+        api_symbol = self._map_symbol(symbol)
+        url = f"{self.BASE_URL}/option-chain"
+        params = {"symbol": api_symbol}
+        
+        if expiry:
+            params["expiry"] = self._fmt_date(expiry)
+        
+        try:
+            resp = self._session.get(url, params=params, timeout=30)
+            resp.raise_for_status()
+            data = resp.json()
+            
+            if not data.get("data"):
+                return pd.DataFrame()
+            
+            df = pd.DataFrame(data["data"])
+            df.columns = [c.strip().lower() for c in df.columns]
+            
+            # Add our symbol format
+            df["underlying"] = symbol
+            
+            logger.info(f"IndianMarketAPI: Fetched option chain for {symbol}: {len(df)} contracts")
+            return df
+            
+        except requests.RequestException as e:
+            logger.error(f"IndianMarketAPI error fetching option chain for {symbol}: {e}")
+            return pd.DataFrame()
+
+    # ── Market Quotes ───────────────────────────────────────────────────────
+
+    def fetch_quote(self, symbol: str) -> dict:
+        """
+        Fetch current market quote (LTP, OHLC, volume).
+        
+        Args:
+            symbol: Symbol (e.g., "NIFTY", "NIFTY-I")
+        
+        Returns:
+            Dict with quote data
+        """
+        self._rate_limit()
+        
+        api_symbol = self._map_symbol(symbol)
+        url = f"{self.BASE_URL}/quote"
+        params = {"symbol": api_symbol}
+        
+        try:
+            resp = self._session.get(url, params=params, timeout=15)
+            resp.raise_for_status()
+            data = resp.json()
+            
+            if data.get("data"):
+                return data["data"]
+            return {}
+            
+        except requests.RequestException as e:
+            logger.error(f"IndianMarketAPI error fetching quote for {symbol}: {e}")
+            return {}
+
+    # ── Index Data ──────────────────────────────────────────────────────────
+
+    def fetch_index_data(self, index: str = "NIFTY") -> dict:
+        """
+        Fetch index data (value, change, etc.).
+        
+        Args:
+            index: Index name (NIFTY, BANKNIFTY, FINNIFTY, etc.)
+        
+        Returns:
+            Dict with index data
+        """
+        self._rate_limit()
+        
+        url = f"{self.BASE_URL}/index"
+        params = {"symbol": index.upper()}
+        
+        try:
+            resp = self._session.get(url, params=params, timeout=15)
+            resp.raise_for_status()
+            data = resp.json()
+            
+            if data.get("data"):
+                return data["data"]
+            return {}
+            
+        except requests.RequestException as e:
+            logger.error(f"IndianMarketAPI error fetching index {index}: {e}")
+            return {}
+
+    # ── Expiry List ─────────────────────────────────────────────────────────
+
+    def fetch_expiry_list(self, symbol: str) -> list:
+        """
+        Fetch available expiry dates for a symbol.
+        
+        Args:
+            symbol: Underlying symbol (e.g., "NIFTY")
+        
+        Returns:
+            List of expiry dates (datetime.date objects)
+        """
+        self._rate_limit()
+        
+        api_symbol = self._map_symbol(symbol)
+        url = f"{self.BASE_URL}/expiry"
+        params = {"symbol": api_symbol}
+        
+        try:
+            resp = self._session.get(url, params=params, timeout=15)
+            resp.raise_for_status()
+            data = resp.json()
+            
+            expiries = []
+            if data.get("data"):
+                for exp_str in data["data"]:
+                    try:
+                        expiries.append(datetime.strptime(exp_str, "%Y-%m-%d").date())
+                    except ValueError:
+                        pass
+            
+            return sorted(expiries)
+            
+        except requests.RequestException as e:
+            logger.error(f"IndianMarketAPI error fetching expiries for {symbol}: {e}")
+            return []
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Unified Data Adapter (Auto-fallback)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+class UnifiedDataAdapter:
+    """
+    Unified adapter that tries TrueData first, falls back to IndianMarketAPI.
+    
+    Usage:
+        adapter = UnifiedDataAdapter()
+        df = adapter.fetch_historical_bars("NIFTY-I", start, end, "1min")
+    """
+
+    def __init__(self):
+        self.truedata = TrueDataAdapter()
+        self.indian_api = IndianMarketAPIAdapter()
+        self._use_fallback = False
+
+    def fetch_historical_bars(
+        self,
+        symbol: str,
+        start: datetime,
+        end: datetime,
+        interval: str = "1min",
+    ) -> pd.DataFrame:
+        """Try TrueData first, fall back to IndianMarketAPI."""
+        if not self._use_fallback:
+            df = self.truedata.fetch_historical_bars(symbol, start, end, interval)
+            if not df.empty:
+                return df
+            logger.warning(f"TrueData returned empty for {symbol}, trying IndianMarketAPI...")
+            self._use_fallback = True
+        
+        return self.indian_api.fetch_historical_bars(symbol, start, end, interval)
+
+    def fetch_historical_minute_bars(
+        self,
+        symbol: str,
+        days: int = 180,
+        end_date: Optional[datetime] = None,
+    ) -> pd.DataFrame:
+        """Try TrueData first, fall back to IndianMarketAPI."""
+        if not self._use_fallback:
+            df = self.truedata.fetch_historical_minute_bars(symbol, days, end_date)
+            if not df.empty:
+                return df
+            logger.warning(f"TrueData returned empty for {symbol}, trying IndianMarketAPI...")
+            self._use_fallback = True
+        
+        return self.indian_api.fetch_historical_minute_bars(symbol, days, end_date)
+
+    def fetch_option_chain(
+        self,
+        symbol: str,
+        expiry: Optional[datetime] = None,
+    ) -> pd.DataFrame:
+        """Try TrueData first, fall back to IndianMarketAPI."""
+        # TrueData doesn't have a direct option chain REST endpoint
+        # So we primarily use IndianMarketAPI for this
+        return self.indian_api.fetch_option_chain(symbol, expiry)
+
+    def fetch_expiry_list(self, symbol: str) -> list:
+        """Get expiry list from IndianMarketAPI (TrueData doesn't expose this via REST)."""
+        return self.indian_api.fetch_expiry_list(symbol)
+
+    # Delegate WebSocket methods to TrueData (IndianMarketAPI has no WebSocket)
+    def ws_connect(self) -> bool:
+        return self.truedata.ws_connect()
+
+    def ws_subscribe(self, symbols: List[str]):
+        return self.truedata.ws_subscribe(symbols)
+
+    def ws_start_streaming(self, callback: Callable):
+        return self.truedata.ws_start_streaming(callback)
+
+    def ws_stop_streaming(self):
+        return self.truedata.ws_stop_streaming()
+
+    def ws_disconnect(self):
+        return self.truedata.ws_disconnect()
+
+    @property
+    def is_ws_connected(self) -> bool:
+        return self.truedata.is_ws_connected

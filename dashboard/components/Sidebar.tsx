@@ -115,7 +115,7 @@ export default function Sidebar() {
               borderRight: '1px solid #252a33',
             }}
           >
-            TEST
+            PAPER
           </button>
           <button
             onClick={() => setMode("live")}
@@ -129,7 +129,7 @@ export default function Sidebar() {
           </button>
         </div>
         <p className="text-[8px] mt-1.5 px-1" style={{ color: mode === "live" ? '#ff3e3e' : '#3d4450' }}>
-          {mode === "live" ? "⚠ REAL EXECUTIONS VIA ZERODHA" : "SIMULATED PAPER TRADES ONLY"}
+          {mode === "live" ? "⚠ REAL MONEY - ZERODHA REQUIRED" : "PAPER TRADING - SIMULATED ONLY"}
         </p>
       </div>
 

@@ -22,11 +22,17 @@ export function TradingModeProvider({ children }: { children: ReactNode }) {
 
   const setMode = useCallback((newMode: TradingMode) => {
     if (newMode === "live") {
-      // Check for Zerodha keys
+      // Check for Zerodha keys - only needed for REAL money trading
       const apiKey = process.env.NEXT_PUBLIC_ZERODHA_API_KEY;
       const apiSecret = process.env.NEXT_PUBLIC_ZERODHA_API_SECRET;
       if (!apiKey || !apiSecret) {
-        setDialogError("ZERODHA API KEYS NOT CONFIGURED\n\nSet NEXT_PUBLIC_ZERODHA_API_KEY and NEXT_PUBLIC_ZERODHA_API_SECRET in your .env.local file to enable live trading.");
+        setDialogError(
+          "LIVE MODE REQUIRES ZERODHA API KEYS\n\n" +
+          "This mode executes REAL trades with real money via Zerodha.\n\n" +
+          "For paper trading with live data, use PAPER mode (yellow button).\n\n" +
+          "To enable live trading, set NEXT_PUBLIC_ZERODHA_API_KEY and " +
+          "NEXT_PUBLIC_ZERODHA_API_SECRET in your .env.local file."
+        );
         setShowDialog(true);
         return;
       }
