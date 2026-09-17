@@ -55,16 +55,34 @@ def upsert_candles(df: pd.DataFrame, table: str = "minute_candles"):
 def init_db():
     """Run the schema.sql to initialize all tables and hypertables."""
     import os
+    import re
     schema_path = os.path.join(os.path.dirname(__file__), "schema.sql")
     with open(schema_path, "r") as f:
         sql = f.read()
-    with engine.connect() as conn:
-        for statement in sql.split(";"):
-            stmt = statement.strip()
+    
+    # Remove comment lines (starting with --) but keep box-drawing comments
+    # Split by semicolon only when not inside a comment block
+    statements = []
+    current = []
+    for line in sql.splitlines():
+        stripped = line.strip()
+        # Skip pure comment lines
+        if stripped.startswith("--"):
+            continue
+        current.append(line)
+        if stripped.endswith(";"):
+            stmt = "\n".join(current).strip()
             if stmt:
-                try:
-                    conn.execute(text(stmt))
-                except Exception as e:
-                    logger.warning(f"Schema statement skipped: {e}")
-        conn.commit()
+                statements.append(stmt)
+            current = []
+    
+    # Execute each statement in its own transaction
+    for stmt in statements:
+        try:
+            with engine.begin() as conn:
+                conn.execute(text(stmt))
+        except Exception as e:
+            logger.warning(f"Schema statement skipped: {e}")
+            logger.debug(f"Failed statement: {stmt[:100]}...")
+    
     logger.info("Database schema initialized.")
