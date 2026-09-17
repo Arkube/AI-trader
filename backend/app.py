@@ -3219,6 +3219,130 @@ def api_broker_exit():
     return jsonify(result)
 
 
+# ── LLM / AI Analysis API ───────────────────────────────────────────────────
+
+from llm_client import (
+    get_llm_client, analyze_market_state, analyze_trade_journey,
+    LLMResponse, TRADING_SYSTEM_PROMPT
+)
+
+
+@app.route("/api/ai/providers")
+def api_ai_providers():
+    """List available LLM providers and their status."""
+    from llm_client import PROVIDERS
+    providers = {}
+    for name, cls in PROVIDERS.items():
+        try:
+            instance = cls()
+            # Check if API key is configured
+            has_key = bool(getattr(instance, 'api_key', None) or 
+                          getattr(instance, 'base_url', None))
+            providers[name] = {
+                "available": has_key,
+                "default_model": getattr(instance, 'default_model', 'unknown'),
+                "endpoint": getattr(instance, 'endpoint', getattr(instance, 'base_url', 'local'))
+            }
+        except Exception as e:
+            providers[name] = {"available": False, "error": str(e)}
+    
+    current = os.getenv("LLM_PROVIDER", "openrouter")
+    return jsonify({"providers": providers, "current": current})
+
+
+@app.route("/api/ai/analyze", methods=["POST"])
+def api_ai_analyze():
+    """Analyze current market state using LLM."""
+    try:
+        body = request.get_json(force=True) if request.is_json else {}
+        provider = body.get("provider") or os.getenv("LLM_PROVIDER")
+        
+        # Get current state from dashboard
+        nifty_price = state.get("last_price", 0)
+        regime = state.get("regime", "UNKNOWN")
+        positions = paper_positions_by_mode.get("test", []) + paper_positions_by_mode.get("live", [])
+        open_positions = [p for p in positions if p.get("status") == "OPEN"]
+        
+        # Get recent closed trades
+        recent_trades = _closed_trades_by_mode.get("test", [])[-5:] + _closed_trades_by_mode.get("live", [])[-5:]
+        
+        resp = analyze_market_state(
+            nifty_price=nifty_price,
+            regime=regime,
+            positions=open_positions,
+            recent_trades=recent_trades,
+            provider=provider
+        )
+        
+        return jsonify({
+            "analysis": resp.content,
+            "provider": resp.provider,
+            "model": resp.model,
+            "error": resp.error
+        })
+    except Exception as e:
+        logger.error(f"AI analyze error: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/ai/analyze_trade", methods=["POST"])
+def api_ai_analyze_trade():
+    """Analyze a completed trade journey."""
+    try:
+        body = request.get_json(force=True) if request.is_json else {}
+        trade_id = body.get("trade_id")
+        provider = body.get("provider") or os.getenv("LLM_PROVIDER")
+        
+        if not trade_id:
+            return jsonify({"error": "trade_id required"}), 400
+        
+        # Find trade in history
+        all_trades = _closed_trades_by_mode.get("test", []) + _closed_trades_by_mode.get("live", [])
+        trade = next((t for t in all_trades if t.get("id") == trade_id), None)
+        
+        if not trade:
+            return jsonify({"error": "Trade not found"}), 404
+        
+        journey = trade.get("journey", [])
+        resp = analyze_trade_journey(journey, trade)
+        
+        return jsonify({
+            "analysis": resp.content,
+            "provider": resp.provider,
+            "model": resp.model,
+            "error": resp.error
+        })
+    except Exception as e:
+        logger.error(f"AI trade analysis error: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/ai/chat", methods=["POST"])
+def api_ai_chat():
+    """General chat with LLM (trading context)."""
+    try:
+        body = request.get_json(force=True) if request.is_json else {}
+        prompt = body.get("prompt", "")
+        provider = body.get("provider") or os.getenv("LLM_PROVIDER")
+        system = body.get("system", TRADING_SYSTEM_PROMPT)
+        
+        if not prompt:
+            return jsonify({"error": "prompt required"}), 400
+        
+        client = get_llm_client(provider)
+        resp = client.ask(prompt, system=system, temperature=body.get("temperature", 0.3))
+        
+        return jsonify({
+            "response": resp.content,
+            "provider": resp.provider,
+            "model": resp.model,
+            "error": resp.error
+        })
+    except Exception as e:
+        logger.error(f"AI chat error: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
 if __name__ == "__main__":
     initialize()
 
