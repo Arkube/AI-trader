@@ -227,7 +227,13 @@ TRAIL_ACTIVATE_PCT = 0.10   # Start trailing once profit > 10%
 TRAIL_FACTOR = 0.50         # Trail SL at 50% of max profit
 TGT_PCT = 0.50              # Target at 50% above entry
 COMMISSION = 40.0
-LIVE_CACHE_FILE = "/tmp/td_live_prices.json"
+
+# Use project-local tmp folder for cross-platform compatibility
+import tempfile
+from pathlib import Path
+PROJECT_TMP = Path(__file__).resolve().parent.parent / "tmp"
+PROJECT_TMP.mkdir(exist_ok=True)
+LIVE_CACHE_FILE = str(PROJECT_TMP / "td_live_prices.json")
 
 # Background processes
 _tick_monitor_thread = None

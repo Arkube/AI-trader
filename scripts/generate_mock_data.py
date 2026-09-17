@@ -54,9 +54,11 @@ def generate_mock_data():
                 'ts': now.isoformat()
             }
 
-    # Write to cache file (Windows-compatible path)
-    import tempfile
-    cache_file = Path(tempfile.gettempdir()) / 'td_live_prices.json'
+    # Write to cache file (project-local tmp folder)
+    from pathlib import Path
+    PROJECT_TMP = Path(__file__).resolve().parent.parent / "tmp"
+    PROJECT_TMP.mkdir(exist_ok=True)
+    cache_file = PROJECT_TMP / "td_live_prices.json"
     with open(cache_file, 'w') as f:
         json.dump(cache, f, indent=2)
 
