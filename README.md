@@ -246,7 +246,10 @@ This is a **complete algorithmic trading research platform** that covers the ful
 | Python | 3.13+ | Backend + ML pipeline |
 | Node.js | 18+ | Next.js dashboard |
 | PostgreSQL | 17 | With TimescaleDB extension |
-| TrueData API | — | Live + historical market data |
+| TrueData API | — | **Paid** — Live + historical market data (WebSocket + REST) |
+| Indian Market API | — | **Free** — Historical data fallback (REST only, no API key needed) |
+
+> **Important**: TrueData is a **paid market data vendor** (~₹2,000-5,000/month). For live tick streaming and real-time data during market hours, you need a TrueData subscription. However, the system includes a **free fallback** using the [Indian Stock Market API](https://github.com/0xramm/Indian-Stock-Market-API) for historical data, option chains, and backtesting — no API key required.
 
 ### 1. Clone & Python environment
 
@@ -304,9 +307,20 @@ DB_NAME=trading
 DB_USER=postgres
 DB_PASSWORD=postgres
 
-# TrueData (required for live data)
+# TrueData (required for LIVE tick streaming during market hours)
+# Get credentials from https://truedata.in (paid subscription)
 TRUEDATA_USER=your_username
 TRUEDATA_PASSWORD=your_password
+
+# Indian Market API (optional - free fallback for historical data)
+# No API key required - uses https://github.com/0xramm/Indian-Stock-Market-API
+# INDIAN_MARKET_API_KEY=  # Not needed, but can be set for higher rate limits
+
+# Zerodha Kite Connect (required only for LIVE money trading)
+# Get from https://developers.kite.trade
+KITE_API_KEY=your_kite_api_key
+KITE_API_SECRET=your_kite_api_secret
+KITE_ACCESS_TOKEN=your_access_token
 
 # Trading parameters (optional overrides)
 INITIAL_CAPITAL=50000
