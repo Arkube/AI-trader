@@ -250,6 +250,7 @@ This is a **complete algorithmic trading research platform** that covers the ful
 
 ### 1. Clone & Python environment
 
+**Linux / macOS:**
 ```bash
 git clone https://github.com/Arkube/ai-trader.git
 cd ai-trader
@@ -257,6 +258,22 @@ python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 ```
+
+**Windows (PowerShell):**
+```powershell
+git clone https://github.com/Arkube/ai-trader.git
+cd ai-trader
+python -m venv .venv
+.venv\Scripts\Activate.ps1
+# Or if execution policy blocks it:
+.venv\Scripts\activate.bat
+.venv\Scripts\pip.exe install -r requirements.txt
+```
+
+> **Note:** `pandas-ta` (via `numba`) doesn't support Python 3.14 yet. On Python 3.14+, install core packages only:
+> ```powershell
+> .venv\Scripts\pip.exe install pandas numpy python-dotenv sqlalchemy psycopg2-binary scikit-learn xgboost lightgbm joblib kiteconnect websocket-client requests beautifulsoup4 python-dateutil torch colorama flask flask-cors
+> ```
 
 ### 2. Database setup
 
@@ -355,12 +372,21 @@ For more information, see [diploi.com](https://diploi.com/).
 ### Start everything (market hours only — 9:15–15:30 IST)
 
 **Terminal 1 — Flask API backend:**
+
+**Linux / macOS:**
 ```bash
 source .venv/bin/activate
 python backend/app.py
+```
+
+**Windows (PowerShell):**
+```powershell
+.venv\Scripts\Activate.ps1
+python backend/app.py
+```
+
 # Serves on http://localhost:5050
 # Auto-starts tick collector at market open
-```
 
 **Terminal 2 — Next.js dashboard:**
 ```bash
