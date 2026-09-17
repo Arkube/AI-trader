@@ -251,7 +251,7 @@ This is a **complete algorithmic trading research platform** that covers the ful
 ### 1. Clone & Python environment
 
 ```bash
-git clone https://github.com/yourusername/ai-trader.git
+git clone https://github.com/Arkube/ai-trader.git
 cd ai-trader
 python3 -m venv .venv
 source .venv/bin/activate
