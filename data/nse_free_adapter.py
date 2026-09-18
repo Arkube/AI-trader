@@ -59,17 +59,6 @@ class NSEFreeAdapter:
         self._min_request_interval = 1.5  # 1.5 requests/second to be safe
         
     def _rate_limit(self):
-        """Lazy-load nsepython to avoid import errors if not installed."""
-        if self._nse is None:
-            try:
-                from nsepython import NSE
-                self._nse = NSE()
-            except ImportError:
-                logger.error("nsepython not installed. Run: pip install nsepython")
-                raise
-        return self._nse
-    
-    def _rate_limit(self):
         """Enforce minimum interval between requests."""
         elapsed = time.time() - self._last_request_time
         if elapsed < self._min_request_interval:
@@ -103,16 +92,18 @@ class NSEFreeAdapter:
         except Exception as e:
             logger.debug(f"Cache write failed: {e}")
     
-    # ═══════════════════════════════════════════════════════════════════════
-    # OPTION CHAIN
-    # ═══════════════════════════════════════════════════════════════════════
+    # ════════════════════════════════════════════════════════════════════════
+    # OPTION CHAIN (using oi_chain_builder - most reliable)
+    # ════════════════════════════════════════════════════════════════════════
     
     def get_option_chain(self, symbol: str = "NIFTY", use_cache: bool = True) -> pd.DataFrame:
         """
-        Get option chain for NIFTY/BANKNIFTY/FINNIFTY.
+        Get option chain for NIFTY/BANKNIFTY/FINNIFTY using oi_chain_builder.
         
         Returns DataFrame with columns:
         strike, expiry, CE_ltp, CE_oi, CE_iv, CE_delta, PE_ltp, PE_oi, PE_iv, PE_delta, etc.
+        
+        Note: Often returns empty due to NSE blocking scrapers.
         """
         cache_key = f"option_chain_{symbol}"
         
@@ -124,12 +115,25 @@ class NSEFreeAdapter:
         self._rate_limit()
         
         try:
-            nse = self._get_nse()
-            # nsepython returns dict with 'records' -> 'data' list
-            raw = nse.option_chain(symbol)
+            from nsepython import oi_chain_builder
+            
+            # Try to get current expiry first
+            expiry = self._get_nearest_expiry(symbol)
+            if not expiry:
+                logger.warning(f"Could not determine expiry for {symbol}")
+                return pd.DataFrame()
+            
+            # Format expiry for oi_chain_builder (DD-MM-YYYY)
+            try:
+                exp_date = datetime.strptime(expiry, "%Y-%m-%d")
+                expiry_fmt = exp_date.strftime("%d-%m-%Y")
+            except Exception:
+                expiry_fmt = expiry
+            
+            raw = oi_chain_builder(symbol, expiry=expiry_fmt, oi_mode='full')
             
             if not raw or 'records' not in raw or 'data' not in raw['records']:
-                logger.warning(f"No option chain data for {symbol}")
+                logger.warning(f"No option chain data for {symbol} (expiry: {expiry})")
                 return pd.DataFrame()
             
             records = raw['records']['data']
@@ -139,7 +143,7 @@ class NSEFreeAdapter:
             rows = []
             for rec in records:
                 strike = rec.get('strikePrice')
-                expiry = rec.get('expiryDate')
+                exp = rec.get('expiryDate')
                 
                 ce = rec.get('CE', {})
                 pe = rec.get('PE', {})
@@ -147,7 +151,7 @@ class NSEFreeAdapter:
                 rows.append({
                     'symbol': symbol,
                     'strike': strike,
-                    'expiry': expiry,
+                    'expiry': exp,
                     'timestamp': datetime.now(),
                     
                     # Call data
@@ -183,12 +187,30 @@ class NSEFreeAdapter:
             if use_cache and not df.empty:
                 self._set_cached(cache_key, df.to_dict('records'))
             
-            logger.info(f"Fetched option chain for {symbol}: {len(df)} strikes, {len(expiry_dates)} expiries")
+            logger.info(f"Fetched option chain for {symbol}: {len(df)} strikes, expiry: {expiry}")
             return df
             
         except Exception as e:
             logger.error(f"Option chain fetch failed for {symbol}: {e}")
             return pd.DataFrame()
+    
+    def _get_nearest_expiry(self, symbol: str) -> Optional[str]:
+        """Get nearest expiry date for symbol."""
+        try:
+            from nsepython import nse_expirydetails
+            expiries = nse_expirydetails(symbol)
+            if expiries and isinstance(expiries, list) and len(expiries) > 0:
+                # Return first (nearest) expiry
+                return expiries[0]
+        except Exception as e:
+            logger.debug(f"Could not fetch expiry for {symbol}: {e}")
+        
+        # Fallback: calculate next Thursday (weekly expiry)
+        today = date.today()
+        days_ahead = 3 - today.weekday()  # Thursday = 3
+        if days_ahead <= 0:
+            days_ahead += 7
+        return (today + timedelta(days=days_ahead)).strftime("%Y-%m-%d")
     
     def get_atm_strike(self, symbol: str = "NIFTY") -> Optional[int]:
         """Get ATM strike for symbol."""
@@ -198,20 +220,23 @@ class NSEFreeAdapter:
         underlying = chain['underlying_value'].iloc[0] if 'underlying_value' in chain.columns else None
         if underlying is None:
             return None
-        # NIFTY strike gap is 50
         gap = 50 if symbol == "NIFTY" else 100
         return int(round(underlying / gap) * gap)
     
     def get_expiry_dates(self, symbol: str = "NIFTY") -> List[str]:
         """Get list of expiry dates for symbol."""
-        chain = self.get_option_chain(symbol)
-        if chain.empty:
-            return []
-        return sorted(chain['expiry'].unique().tolist())
+        try:
+            from nsepython import nse_expirydetails
+            expiries = nse_expirydetails(symbol)
+            if expiries and isinstance(expiries, list):
+                return [str(e) for e in expiries]
+        except Exception:
+            pass
+        return []
     
-    # ═══════════════════════════════════════════════════════════════════════
+    # ════════════════════════════════════════════════════════════════════════
     # LIVE QUOTES (Polling-based)
-    # ═══════════════════════════════════════════════════════════════════════
+    # ════════════════════════════════════════════════════════════════════════
     
     def get_live_quote(self, symbol: str) -> Optional[Dict]:
         """
@@ -228,30 +253,40 @@ class NSEFreeAdapter:
         self._rate_limit()
         
         try:
-            nse = self._get_nse()
+            from nsepython import nse_eq, nse_get_index_quote
             
             # Handle index vs equity
             if symbol in ["NIFTY 50", "NIFTY BANK", "NIFTY FIN SERVICE", "NIFTY"]:
                 # Index quote
-                quote = nse.index_quote(symbol.replace(" ", ""))
+                quote = nse_get_index_quote(symbol)
             else:
                 # Equity quote
-                quote = nse.equity_quote(symbol)
+                quote = nse_eq(symbol)
             
-            if not quote:
+            if not quote or not isinstance(quote, dict) or len(quote) == 0:
                 return None
             
-            # Normalize to standard format
+            # Normalize to standard format (handle different key formats)
+            price = (quote.get('lastPrice') or quote.get('last_price') or 
+                    quote.get('LTP') or quote.get('ltp'))
+            change = quote.get('change') or quote.get('CHANGE')
+            pct_change = quote.get('pChange') or quote.get('p_change') or quote.get('PCHANGE')
+            open_price = quote.get('open') or quote.get('OPEN')
+            high = quote.get('dayHigh') or quote.get('high') or quote.get('HIGH')
+            low = quote.get('dayLow') or quote.get('low') or quote.get('LOW')
+            prev_close = quote.get('previousClose') or quote.get('prev_close') or quote.get('PREVCLOSE')
+            volume = quote.get('totalTradedVolume') or quote.get('volume') or quote.get('VOLUME')
+            
             result = {
                 'symbol': symbol,
-                'price': quote.get('lastPrice') or quote.get('last_price'),
-                'change': quote.get('change'),
-                'pct_change': quote.get('pChange') or quote.get('p_change'),
-                'open': quote.get('open'),
-                'high': quote.get('dayHigh') or quote.get('high'),
-                'low': quote.get('dayLow') or quote.get('low'),
-                'prev_close': quote.get('previousClose') or quote.get('prev_close'),
-                'volume': quote.get('totalTradedVolume') or quote.get('volume'),
+                'price': float(price) if price else None,
+                'change': float(change) if change else None,
+                'pct_change': float(pct_change) if pct_change else None,
+                'open': float(open_price) if open_price else None,
+                'high': float(high) if high else None,
+                'low': float(low) if low else None,
+                'prev_close': float(prev_close) if prev_close else None,
+                'volume': int(volume) if volume else 0,
                 'timestamp': datetime.now().isoformat(),
                 'source': 'nse_free'
             }
@@ -265,7 +300,7 @@ class NSEFreeAdapter:
     
     def get_index_quotes(self) -> Dict[str, Dict]:
         """Get quotes for major indices."""
-        indices = ["NIFTY 50", "NIFTY BANK", "NIFTY FIN SERVICE", "NIFTY"]
+        indices = ["NIFTY 50", "NIFTY BANK", "NIFTY FIN SERVICE"]
         quotes = {}
         for idx in indices:
             q = self.get_live_quote(idx)
@@ -273,8 +308,8 @@ class NSEFreeAdapter:
                 quotes[idx] = q
         return quotes
     
-    # ═══════════════════════════════════════════════════════════════════════
-    # HISTORICAL DATA
+    # ════════════════════════════════════════════════════════════════════════
+    # HISTORICAL DATA (using equity_history, index_history)
     # ═══════════════════════════════════════════════════════════════════════
     
     def get_historical_data(
@@ -288,7 +323,7 @@ class NSEFreeAdapter:
         Get historical OHLCV data.
         
         Args:
-            symbol: NSE symbol (e.g., "RELIANCE", "NIFTY")
+            symbol: NSE symbol (e.g., "RELIANCE", "NIFTY 50")
             start_date: Start date
             end_date: End date
             interval: "1d" (daily), "1m" not supported by free API
@@ -306,41 +341,53 @@ class NSEFreeAdapter:
         self._rate_limit()
         
         try:
-            nse = self._get_nse()
+            from nsepython import equity_history, index_history
+            
+            # Format dates as DD-MM-YYYY
+            start_str = start_date.strftime("%d-%m-%Y")
+            end_str = end_date.strftime("%d-%m-%Y")
             
             # nsepython historical data
-            if symbol in ["NIFTY 50", "NIFTY BANK", "NIFTY FIN SERVICE"]:
+            if symbol in ["NIFTY 50", "NIFTY BANK", "NIFTY FIN SERVICE", "NIFTY"]:
                 # Index historical
-                data = nse.index_historical_data(
-                    symbol=symbol.replace(" ", ""),
-                    start_date=start_date.strftime("%d-%m-%Y"),
-                    end_date=end_date.strftime("%d-%m-%Y")
-                )
+                data = index_history(symbol, start_str, end_str)
             else:
-                # Equity historical
-                data = nse.equity_historical_data(
-                    symbol=symbol,
-                    start_date=start_date.strftime("%d-%m-%Y"),
-                    end_date=end_date.strftime("%d-%m-%Y")
-                )
+                # Equity historical - needs series parameter
+                data = equity_history(symbol, "EQ", start_str, end_str)
             
-            if not data or 'data' not in data:
+            if not data or not isinstance(data, dict) or 'data' not in data:
                 logger.warning(f"No historical data for {symbol}")
                 return pd.DataFrame()
             
             rows = []
             for row in data['data']:
-                rows.append({
-                    'timestamp': pd.to_datetime(row['CH_TIMESTAMP'] or row['CH_DATE']),
-                    'open': float(row['CH_OPENING_PRICE'] or row['OPEN']),
-                    'high': float(row['CH_TRADE_HIGH_PRICE'] or row['HIGH']),
-                    'low': float(row['CH_TRADE_LOW_PRICE'] or row['LOW']),
-                    'close': float(row['CH_CLOSING_PRICE'] or row['CLOSE']),
-                    'volume': int(row['CH_TOT_TRADED_QTY'] or row['VOLUME'] or 0),
-                })
+                # Handle different column name formats
+                ts = (row.get('CH_TIMESTAMP') or row.get('CH_DATE') or 
+                      row.get('DATE') or row.get('date'))
+                open_price = (row.get('CH_OPENING_PRICE') or row.get('OPEN') or 
+                             row.get('open'))
+                high = (row.get('CH_TRADE_HIGH_PRICE') or row.get('HIGH') or 
+                       row.get('high'))
+                low = (row.get('CH_TRADE_LOW_PRICE') or row.get('LOW') or 
+                      row.get('low'))
+                close = (row.get('CH_CLOSING_PRICE') or row.get('CLOSE') or 
+                        row.get('close'))
+                volume = (row.get('CH_TOT_TRADED_QTY') or row.get('VOLUME') or 
+                         row.get('volume') or 0)
+                
+                if ts and close:
+                    rows.append({
+                        'timestamp': pd.to_datetime(ts),
+                        'open': float(open_price) if open_price else None,
+                        'high': float(high) if high else None,
+                        'low': float(low) if low else None,
+                        'close': float(close) if close else None,
+                        'volume': int(volume) if volume else 0,
+                    })
             
             df = pd.DataFrame(rows)
-            df = df.sort_values('timestamp').reset_index(drop=True)
+            if not df.empty:
+                df = df.sort_values('timestamp').reset_index(drop=True)
             
             self._set_cached(cache_key, df.to_dict('records'))
             logger.info(f"Fetched {len(df)} historical bars for {symbol}")
@@ -352,7 +399,7 @@ class NSEFreeAdapter:
     
     # ═══════════════════════════════════════════════════════════════════════
     # MARKET STATUS
-    # ═══════════════════════════════════════════════════════════════════════
+    # ══════════════════════════════════════════════════════════════════════
     
     def get_market_status(self) -> Dict:
         """Get market status (open/closed, trading hours)."""
@@ -364,15 +411,28 @@ class NSEFreeAdapter:
         self._rate_limit()
         
         try:
-            nse = self._get_nse()
-            status = nse.market_status()
+            from nsepython import nse_marketStatus
+            status = nse_marketStatus()
+            
+            # Parse the complex status structure
+            market_state = "UNKNOWN"
+            is_open = False
+            trade_date = None
+            
+            if isinstance(status, dict) and 'marketState' in status:
+                for mkt in status['marketState']:
+                    if mkt.get('market') == 'Capital Market':
+                        market_state = mkt.get('marketStatus', 'UNKNOWN')
+                        is_open = market_state.upper() == 'OPEN'
+                        trade_date = mkt.get('tradeDate')
+                        break
             
             result = {
-                'market_state': status.get('marketState', 'UNKNOWN'),
-                'trade_date': status.get('tradeDate'),
-                'index': status.get('index', 'NIFTY 50'),
+                'market_state': market_state,
+                'trade_date': trade_date,
+                'index': 'NIFTY 50',
                 'timestamp': datetime.now().isoformat(),
-                'is_open': status.get('marketState', '').upper() == 'OPEN'
+                'is_open': is_open
             }
             
             self._set_cached(cache_key, result)
@@ -382,9 +442,9 @@ class NSEFreeAdapter:
             logger.error(f"Market status failed: {e}")
             return {'market_state': 'UNKNOWN', 'is_open': False}
     
-    # ═══════════════════════════════════════════════════════════════════════
+    # ═════════════════════════════════════════════════════════════════════
     # UTILITY: Convert to TrueData-compatible format
-    # ═══════════════════════════════════════════════════════════════════════
+    # ═══════════════════════════════════════════════════════════════════
     
     def to_truedata_format(self, df: pd.DataFrame, symbol: str) -> pd.DataFrame:
         """
@@ -432,9 +492,9 @@ class NSEFreeAdapter:
         return chain[available].copy()
 
 
-# ═══════════════════════════════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════════════
 # CONVENIENCE FUNCTIONS
-# ═══════════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════
 
 def get_nse_free_adapter() -> NSEFreeAdapter:
     """Get singleton instance."""
@@ -443,9 +503,9 @@ def get_nse_free_adapter() -> NSEFreeAdapter:
     return get_nse_free_adapter._instance
 
 
-# ═══════════════════════════════════════════════════════════════════════
+# ═════════════════════════════════════════════════════════════════
 # TEST / DEMO
-# ═══════════════════════════════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════════
 
 if __name__ == "__main__":
     import argparse
