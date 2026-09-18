@@ -2,15 +2,21 @@
 Free NSE Data Adapter
 ─────────────────────
 Uses nsepython (free, no credentials) for:
-- Option chain snapshots
-- Historical data backfill
-- Live quotes (polling-based)
-- Market status
+- Option chain snapshots (via oi_chain_builder - most reliable)
+- Historical data backfill (via equity_history, index_history)
+- Live quotes (polling-based, via nse_eq, nse_get_index_quote)
+- Market status (via nse_marketStatus)
 
 This supplements TrueData (which provides WebSocket streaming).
 Use when TrueData is unavailable or for development without creds.
 
 Install: pip install nsepython
+
+Note: Free NSE APIs are unreliable - they scrape NSE website which changes frequently.
+      Use TrueData for production live trading. This adapter is for:
+      - Development/testing without TrueData creds
+      - Historical backfill when TrueData quota exceeded
+      - Option chain display on dashboard
 """
 
 import os
@@ -38,16 +44,21 @@ class NSEFreeAdapter:
     
     Rate limits: Be respectful - NSE blocks aggressive scraping.
     Recommended: max 1 request/second, cache responses.
+    
+    Known limitations:
+    - Option chain often returns empty (NSE blocks scrapers)
+    - Historical data sometimes fails (DNS, JSON parse errors)
+    - Live quotes are polling-based, not WebSocket
+    - Market hours only (9:15-15:30 IST)
     """
     
     def __init__(self, cache_dir: str = "data/cache/nse_free"):
         self.cache_dir = Path(cache_dir)
         self.cache_dir.mkdir(parents=True, exist_ok=True)
-        self._nse = None
         self._last_request_time = 0
-        self._min_request_interval = 1.0  # 1 request/second
+        self._min_request_interval = 1.5  # 1.5 requests/second to be safe
         
-    def _get_nse(self):
+    def _rate_limit(self):
         """Lazy-load nsepython to avoid import errors if not installed."""
         if self._nse is None:
             try:
