@@ -21,11 +21,11 @@ load_dotenv()
 from kiteconnect import KiteConnect
 
 def main():
-    api_key = os.getenv("KITE_API_KEY")
-    api_secret = os.getenv("KITE_API_SECRET")
+    api_key = os.getenv("ZERODHA_API_KEY")
+    api_secret = os.getenv("ZERODHA_API_SECRET")
     
     if not api_key or not api_secret:
-        print("❌ KITE_API_KEY and KITE_API_SECRET must be set in .env")
+        print("❌ ZERODHA_API_KEY and ZERODHA_API_SECRET must be set in .env")
         return 1
     
     kite = KiteConnect(api_key=api_key)
@@ -60,17 +60,17 @@ def main():
         env_path = Path(__file__).resolve().parent.parent / ".env"
         if env_path.exists():
             content = env_path.read_text()
-            # Replace or add KITE_ACCESS_TOKEN
+            # Replace or add ZERODHA_ACCESS_TOKEN
             lines = content.splitlines()
             updated = False
             for i, line in enumerate(lines):
-                if line.startswith("KITE_ACCESS_TOKEN="):
-                    lines[i] = f"KITE_ACCESS_TOKEN={access_token}"
+                if line.startswith("ZERODHA_ACCESS_TOKEN="):
+                    lines[i] = f"ZERODHA_ACCESS_TOKEN={access_token}"
                     updated = True
                     break
             
             if not updated:
-                lines.append(f"KITE_ACCESS_TOKEN={access_token}")
+                lines.append(f"ZERODHA_ACCESS_TOKEN={access_token}")
             
             env_path.write_text("\n".join(lines) + "\n")
             print(f"\n✅ Updated .env file: {env_path}")
