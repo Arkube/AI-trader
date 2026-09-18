@@ -193,6 +193,7 @@ def _get_func(name: str):
         'atr': atr,
         'obv': obv,
         'mfi': mfi,
+        'vwap': vwap,
     }
     return funcs.get(name)
 
